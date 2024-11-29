@@ -1,7 +1,10 @@
-name: Laravel CI/CD Pipeline
+name: CI/CD Pipeline
 
 on:
   push:
+    branches:
+      - main
+  pull_request:
     branches:
       - main
 
@@ -9,30 +12,96 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    services:
+      mysql:
+        image: mysql:5.7
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: angocare
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v2
 
-    - name: Set up PHP
+    - name: Configurar Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '14'
+
+    - name: Instalar dependências
+      run: npm install
+
+    - name: Executar testes
+      run: npm test
+
+    - name: Configurar PHP
       uses: shivammathur/setup-php@v2
       with:
-        php-version: '8.0'
+        php-version: '8.1'
 
-    - name: Install dependencies
-      run: composer install --no-progress --no-suggest --prefer-dist --optimize-autoloader
+    - name: Instalar dependências PHP
+      run: composer install
 
-    - name: Run tests
+    - name: Criar arquivo .env
+      run: |
+        echo "APP_NAME=Laravel" > .env
+        echo "APP_ENV=local" >> .env
+        echo "APP_KEY=" >> .env
+        echo "APP_DEBUG=true" >> .env
+        echo "APP_URL=http://localhost" >> .env
+        echo "DB_CONNECTION=mysql" >> .env
+        echo "DB_HOST=127.0.0.1" >> .env
+        echo "DB_PORT=3306" >> .env
+        echo "DB_DATABASE=angocare" >> .env
+        echo "DB_USERNAME=root" >> .env
+        echo "DB_PASSWORD=root" >> .env
+        php artisan key:generate
+
+    - name: Executar migrações
+      run: php artisan migrate
+
+    - name: Executar testes PHP
       run: php artisan test
 
-    - name: Build Docker images
-      run: docker-compose build
+    - name: Construir imagem Docker
+      run: docker build -t project:latest .
+
+    - name: Fazer login no Docker Hub
+      env:
+        DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+      run: echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
+
+    - name: Configurar Git
+      run: |
+        git config --global user.email "panzopedro26@gmail.com"
+        git config --global user.name "panzo11"
+
+    - name: Criar e enviar tag
+      uses: phish108/autotag-action@v1.1.55
+      with:
+        github-token: ${{ secrets.MY_GITHUB_TOKEN }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
 
     - name: Log in to Docker Hub
-      run: echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
+      env:
+        DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+      run: echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
 
-    - name: Push Docker images
-      run: |
-        docker tag laravel-app:latest your-dockerhub-username/laravel-app:latest
-        docker push your-dockerhub-username/laravel-app:latest
-        docker tag laravel-db:latest your-dockerhub-username/laravel-db:latest
-        docker push your-dockerhub-username/laravel-db:latest
+    - name: Push Docker image
+      run: docker push project:latest
